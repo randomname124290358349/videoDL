@@ -33,7 +33,7 @@ def main():
     # Initialize the application
     app = QApplication(sys.argv)
     try:
-        app_icon = QIcon("resources/icons/ico.ico")
+        app_icon = QIcon("resources/icons/icon.ico")
         app.setWindowIcon(app_icon)
     except Exception as e:
         print(f"Warning: Could not load icon: {str(e)}")
