@@ -4,7 +4,7 @@
 
 ![VideoDL Logo](resources/icons/icon.ico)
 
-**A modern, user-friendly video downloader application for windows (and other plataforms).**
+**A modern, user-friendly video downloader application for windows (and other platforms).**
 
 </div>
 
