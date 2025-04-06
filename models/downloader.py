@@ -100,7 +100,7 @@ class VideoDownloader(QObject):
                     os.chmod(self.yt_dlp_path, 0o755)
                 except OSError as e:
                     self.download_log.emit("System",
-                                          f"Warning: Could not set executable permissions: {str(e)}")
+                                           f"Warning: Could not set executable permissions: {str(e)}")
                     # Continue even if permissions can't be set
 
             self.download_log.emit("System", f"yt-dlp downloaded to {self.yt_dlp_path}")
@@ -145,15 +145,33 @@ class VideoDownloader(QObject):
                 url
             ]
 
-            # Execute the command with Popen, using shell=False for better security
-            process = subprocess.Popen(
-                command,
-                shell=False,  # Avoid shell interpretation
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
+            # Set up the process differently based on platform
+            if platform.system() == "Windows":
+                # On Windows, hide the console window completely
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+
+                process = subprocess.Popen(
+                    command,
+                    shell=False,  # Avoid shell interpretation
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    startupinfo=startupinfo,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+            else:
+                # For non-Windows platforms
+                process = subprocess.Popen(
+                    command,
+                    shell=False,  # Avoid shell interpretation
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1
+                )
 
             # Capture and emit each line of output from the process
             output_filename = None
