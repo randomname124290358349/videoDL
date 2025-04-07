@@ -1,9 +1,18 @@
 import sys
+import os
 import traceback
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtGui import QIcon
 from models.downloader import VideoDownloader
 from views.main_window import MainWindow
+
+
+def resource_path(relative_path):
+    """
+    Get absolute path to resource, works for dev and PyInstaller
+    """
+    base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
 
 
 # Handler for unhandled exceptions
@@ -33,7 +42,8 @@ def main():
     # Initialize the application
     app = QApplication(sys.argv)
     try:
-        app_icon = QIcon("resources/icons/icon.ico")
+        icon_path = resource_path("resources/icons/icon.ico")
+        app_icon = QIcon(icon_path)
         app.setWindowIcon(app_icon)
     except Exception as e:
         print(f"Warning: Could not load icon: {str(e)}")
