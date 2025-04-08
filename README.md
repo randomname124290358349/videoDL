@@ -58,6 +58,11 @@
    python main.py
    ```
 
+## Testing
+   ```
+   pytest test-download-controller.py test-downloader.py test-download-item.py test-main-window.py test-url-validator.py -v --pdb -p no:faulthandler
+   ```
+
 ## Requirements
 
 - Python 3.8 or higher
