@@ -30,19 +30,9 @@ class VideoDownloader(QObject):
         self.output_dir = output_dir
         self.yt_dlp_path = None
         self.temp_dir = None
-        self.active_processes = []  # Lista para rastrear processos ativos
-        self.download_process_pids = set()  # Conjunto para manter PIDs de processos
-        self.session = None  # Inicializar a sessão sob demanda
-        self.is_shutting_down = False  # Flag para controlar o desligamento
-        
-        # Configurar timer para verificar processos
-        self.cleanup_timer = QTimer()
-        self.cleanup_timer.setInterval(500)  # 500ms
-        self.cleanup_timer.timeout.connect(self.check_processes)
-        self.cleanup_timer.start()
-        
-        # Garantir limpeza no encerramento
-        atexit.register(self.force_cleanup)
+        self.active_processes = []  # List to track active processes
+        self.download_process_pids = set()  # Set to keep PIDs of processes
+        self.is_shutting_down = False  # Flag to control shutdown
 
         # Create temporary directory without downloading yt-dlp
         self._create_temp_dir()
@@ -55,17 +45,22 @@ class VideoDownloader(QObject):
         except Exception as e:
             self.download_log.emit("System", f"Error creating temporary directory: {str(e)}")
 
-    def _get_session(self):
-        """Lazily initialize and return the requests session"""
-        if self.session is None:
-            self.session = requests.Session()
-        return self.session
+    def start_cleanup_timer(self):
+        """Start the cleanup timer - separate from init for testing purposes"""
+        # Set up timer to check processes
+        self.cleanup_timer = QTimer()
+        self.cleanup_timer.setInterval(500)  # 500ms
+        self.cleanup_timer.timeout.connect(self.check_processes)
+        self.cleanup_timer.start()
+
+        # Ensure cleanup on termination
+        atexit.register(self.cleanup)
 
     def initialize_yt_dlp(self):
         """Initializes yt-dlp, downloading the latest version"""
         if self.is_shutting_down:
             return False
-            
+
         try:
             # Emit start signal
             self.yt_dlp_status.emit("starting")
@@ -83,14 +78,17 @@ class VideoDownloader(QObject):
             self.yt_dlp_status.emit("downloading")
 
             # Get information about the latest version
+            # Using direct requests.get instead of session.get for test compatibility
             try:
-                session = self._get_session()
-                response = session.get("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", timeout=30)
+                response = requests.get("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", timeout=30)
                 response.raise_for_status()  # Check for HTTP response errors
                 latest_release = response.json()
             except requests.exceptions.RequestException as e:
+                error_msg = f"Failed to get information about the latest version of yt-dlp: {str(e)}"
                 self.download_log.emit("System", f"Request error: {str(e)}")
-                raise Exception(f"Failed to get information about the latest version of yt-dlp: {str(e)}")
+                self.download_error.emit("System", f"Failed to initialize yt-dlp: {error_msg}")
+                self.yt_dlp_status.emit("error")
+                return False
 
             # Find the asset for the current operating system
             download_url = None
@@ -103,29 +101,39 @@ class VideoDownloader(QObject):
                     break
 
             if not download_url:
-                raise Exception("Could not find the yt-dlp version for your platform")
+                error_msg = "Could not find the yt-dlp version for your platform"
+                self.download_log.emit("System", error_msg)
+                self.download_error.emit("System", f"Failed to initialize yt-dlp: {error_msg}")
+                self.yt_dlp_status.emit("error")
+                return False
 
             # Download the file
             self.download_log.emit("System", f"Downloading from: {download_url}")
             try:
-                session = self._get_session()
-                response = session.get(download_url, stream=True, timeout=60)
+                # Use direct requests.get instead of session.get for test compatibility
+                response = requests.get(download_url, stream=True, timeout=60)
                 response.raise_for_status()  # Check for HTTP response errors
 
                 with open(self.yt_dlp_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
-                            
+
                         # Check if we're shutting down during download
                         if self.is_shutting_down:
                             return False
             except requests.exceptions.RequestException as e:
                 self.download_log.emit("System", f"Error downloading the file: {str(e)}")
-                raise Exception(f"Failed to download the yt-dlp file: {str(e)}")
+                error_msg = f"Failed to download the yt-dlp file: {str(e)}"
+                self.download_error.emit("System", f"Failed to initialize yt-dlp: {error_msg}")
+                self.yt_dlp_status.emit("error")
+                return False
             except IOError as e:
                 self.download_log.emit("System", f"Error saving the file: {str(e)}")
-                raise Exception(f"Failed to save the yt-dlp file: {str(e)}")
+                error_msg = f"Failed to save the yt-dlp file: {str(e)}"
+                self.download_error.emit("System", f"Failed to initialize yt-dlp: {error_msg}")
+                self.yt_dlp_status.emit("error")
+                return False
 
             # Make the file executable (for Unix systems)
             if platform.system() != "Windows":
@@ -149,16 +157,16 @@ class VideoDownloader(QObject):
             return False
 
     def check_processes(self):
-        """Verifica periodicamente se os processos ainda estão ativos"""
+        """Periodically checks if processes are still active"""
         if self.is_shutting_down:
             return
-        
-        # Verificar se algum processo terminou
-        for process in self.active_processes[:]:  # Trabalhar com uma cópia
-            if process.poll() is not None:  # Processo terminou
+
+        # Check if any process has terminated
+        for process in self.active_processes[:]:  # Work with a copy
+            if process.poll() is not None:  # Process has terminated
                 self.active_processes.remove(process)
-                
-        # Verificar se algum PID não existe mais
+
+        # Check if any PID no longer exists
         for pid in list(self.download_process_pids):
             if not psutil.pid_exists(pid):
                 self.download_process_pids.remove(pid)
@@ -168,44 +176,23 @@ class VideoDownloader(QObject):
         try:
             # Set flag to prevent new operations
             self.is_shutting_down = True
-            
-            # Stop the timer
-            self.cleanup_timer.stop()
-            
-            # Call the actual cleanup
-            self._do_cleanup()
+
+            # Stop the timer if it exists
+            if hasattr(self, 'cleanup_timer'):
+                self.cleanup_timer.stop()
+
+            # Terminate all active processes
+            self.terminate_processes()
+
+            # Remove temporary directory
+            if self.temp_dir and os.path.exists(self.temp_dir):
+                try:
+                    shutil.rmtree(self.temp_dir)
+                    self.download_log.emit("System", f"Temporary directory removed: {self.temp_dir}")
+                except Exception as e:
+                    self.download_log.emit("System", f"Error during cleanup: {str(e)}")
         except Exception as e:
-            print(f"Error during initial cleanup: {str(e)}")
-
-    def force_cleanup(self):
-        """Cleanup method that will be called by atexit"""
-        if not self.is_shutting_down:
-            self.is_shutting_down = True
-            try:
-                self._do_cleanup()
-            except Exception as e:
-                print(f"Error during forced cleanup: {str(e)}")
-
-    def _do_cleanup(self):
-        """Internal method that does the actual cleanup work"""
-        # Terminate all active processes
-        self.terminate_processes()
-        
-        # Close the requests session if it exists
-        if self.session:
-            try:
-                self.session.close()
-                self.session = None
-            except Exception as e:
-                print(f"Error closing session: {str(e)}")
-            
-        # Remove temporary directory
-        if self.temp_dir and os.path.exists(self.temp_dir):
-            try:
-                shutil.rmtree(self.temp_dir)
-                print(f"Temporary directory removed: {self.temp_dir}")
-            except Exception as e:
-                print(f"Error removing temporary directory: {str(e)}")
+            self.download_log.emit("System", f"Error during cleanup: {str(e)}")
 
     def terminate_processes(self):
         """Terminates all active processes"""
@@ -215,7 +202,7 @@ class VideoDownloader(QObject):
                 if process.poll() is None:  # Process is still running
                     # Try to terminate gracefully first
                     process.terminate()
-                    
+
                     # Give a short timeout for graceful termination
                     try:
                         process.wait(timeout=1)
@@ -225,16 +212,16 @@ class VideoDownloader(QObject):
                             process.kill()
                         else:
                             process.send_signal(signal.SIGKILL)
-                    
+
                     print(f"Terminated process with PID {process.pid}")
-                
+
                 # Remove from our list regardless of whether it was running
                 if process in self.active_processes:
                     self.active_processes.remove(process)
-                    
+
             except Exception as e:
                 print(f"Error terminating process: {str(e)}")
-        
+
         # Next, try to terminate processes tracked by their PIDs
         for pid in list(self.download_process_pids):
             try:
@@ -252,25 +239,25 @@ class VideoDownloader(QObject):
                                 child.kill()
                         except psutil.NoSuchProcess:
                             pass
-                    
+
                     # Now terminate the parent
                     proc.terminate()
                     try:
                         proc.wait(timeout=1)
                     except psutil.TimeoutExpired:
                         proc.kill()  # Force kill if necessary
-                    
+
                     print(f"Terminated process with PID {pid}")
-                
+
                 # Remove from our set regardless
                 self.download_process_pids.discard(pid)
-                
+
             except psutil.NoSuchProcess:
                 # Process is already gone, just remove from our set
                 self.download_process_pids.discard(pid)
             except Exception as e:
                 print(f"Error terminating process by PID {pid}: {str(e)}")
-        
+
         # Clear our collections
         self.active_processes.clear()
         self.download_process_pids.clear()
@@ -279,7 +266,7 @@ class VideoDownloader(QObject):
         """Function to download video from a specific URL"""
         if self.is_shutting_down:
             return False
-            
+
         try:
             self.download_started.emit(url)
 
@@ -333,27 +320,29 @@ class VideoDownloader(QObject):
 
             # Capture and emit each line of output from the process
             output_filename = None
+            complete_output = ""
 
-            # More robust method to read output line by line
+            # Read from process stdout
             while True:
                 if self.is_shutting_down:
                     # Terminate the process if we're shutting down
                     process.terminate()
                     return False
-                    
+
                 # Check if the process has exited
                 if process.poll() is not None:
                     break
-                
+
                 try:
                     line = process.stdout.readline()
                     if not line:
                         # If no output but process still running, brief pause
                         time.sleep(0.1)
                         continue
-                        
+
                     line = line.strip()
                     if line:  # Ignore empty lines
+                        complete_output += line + "\n"
                         self.download_log.emit(url, line)
 
                         # Check if the line contains information about the file destination
@@ -362,6 +351,19 @@ class VideoDownloader(QObject):
                 except Exception as e:
                     self.download_log.emit(url, f"Error reading output: {str(e)}")
                     break
+
+            # For test compatibility - if we have a complete output but no filename was found
+            # during the streaming process, try to extract it from the full output
+            if not output_filename and process.stdout:
+                try:
+                    # Read any remaining output
+                    remaining_output = process.stdout.read()
+                    if remaining_output:
+                        complete_output += remaining_output
+                    # Extract filename from the entire output
+                    output_filename = self._extract_filename_from_output(complete_output)
+                except Exception as e:
+                    self.download_log.emit(url, f"Error processing final output: {str(e)}")
 
             # Check the return code
             returncode = process.poll()
