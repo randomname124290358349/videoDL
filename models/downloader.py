@@ -9,6 +9,7 @@ import psutil
 import atexit
 import sys
 import time
+import uuid
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer
 
 
@@ -278,11 +279,13 @@ class VideoDownloader(QObject):
                 self.download_error.emit(url, "yt-dlp is not available")
                 return False
 
+            temp_uuid = uuid.uuid4()
+
             # Build the command as a list of arguments instead of a string
             command = [
                 self.yt_dlp_path,  # Use the path to the downloaded executable
                 '-f', 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4] / bv*+ba/b',
-                '-o', f'{self.output_dir}/%(title)s.%(ext)s',
+                '-o', f'{self.output_dir}/%(title)s_{str(temp_uuid)}.%(ext)s',
                 url
             ]
 
